@@ -32,9 +32,10 @@ PORTS (as on this robot)
 
 RUN MODES (change MODE right below)
 
-    'run'   - drive
-    'check' - sensor check, motors DO NOT move
-    'stay'  - do nothing
+    'run'    - drive
+    'check'  - sensor check, motors DO NOT move
+    'update' - download the newest robot.py from GitHub
+    'stay'   - do nothing
 
 PLATFORMS
 
@@ -45,9 +46,26 @@ PLATFORMS
 The file detects the platform by itself. All terminal messages are
 pure ASCII on purpose: the EV3 console is ASCII-only and Cyrillic
 text raises UnicodeEncodeError there.
+
+AUTO UPDATE FROM GITHUB
+
+    MODE = 'update' downloads the newest robot.py from GitHub and
+    replaces this file (the old one is kept as robot.py.old).
+
+    Which branch is used, in this order:
+      1) AUTO_UPDATE_BRANCH below, if it is not ''
+      2) the branch this file was downloaded from (".../robolab/
+         arena/xxx/robot.py" -> "arena/xxx")
+      3) the branch chosen by the download server (".../blob/main/
+         robot.py" -> "main", ".../raw/main/robot.py" -> "main")
+      4) 'main'
+
+    Over the network the file itself cannot know its branch, so if
+    the link said nothing useful set AUTO_UPDATE_BRANCH = 'main'.
 ================================================================
 """
 
+import os
 import sys
 import time
 
@@ -55,6 +73,25 @@ import time
 #  RUN MODE
 # ============================================================
 MODE = 'run'
+
+# ------------------------------------------------------------
+#  AUTO UPDATE FROM GITHUB
+#    ''  - take the branch from the link this file came from
+#          (see AUTO UPDATE in the header), by default 'main'
+#    or set it by hand, e.g. 'main'
+# ------------------------------------------------------------
+AUTO_UPDATE_BRANCH = ''
+
+#  True  - on MODE = 'run' first ASK GitHub if a newer version exists
+#          and print the answer (the file is NOT replaced then,
+#          so a competition run always uses the file you tested)
+#  False - no network on start
+AUTO_UPDATE_AT_START = True
+
+REPO_OWNER = 'p25543770-lang'
+REPO_NAME = 'robolab'
+REPO_FILE = 'robot.py'
+UPDATE_TIMEOUT = 20          # seconds for one HTTP request
 
 # ============================================================
 #  PLATFORM DETECTION
@@ -108,14 +145,14 @@ def wait_ms(ms):
 
 class Settings(object):
     """
-    Все числа в одном месте. Меняете здесь — меняется поведение.
-    Можно и в коде: Settings(kp=3.0) — удобно для подбора.
+    All numbers in one place. Change them here to change behaviour.
+    Also possible in code: Settings(kp=3.0) - handy for tuning.
     """
 
     def __init__(self, **kw):
         for k, v in kw.items():
             if not hasattr(Settings, k):
-                raise AttributeError('нет такого параметра: ' + k)
+                raise AttributeError('no such setting: ' + k)
             setattr(self, k, v)
 
     # ---------- робот ----------
@@ -205,43 +242,44 @@ def clamp(x, lo, hi):
 
 class LineFollower(object):
     """
-    Ведение по линии двумя датчиками — версия «не теряется».
+    Line following with two sensors - the never-loses-the-line version.
 
-    КАК СЧИТАЕТСЯ ОШИБКА
+    HOW THE ERROR IS COMPUTED
 
-        error = (правый - левый) * 100        (от -100 до +100)
+        error = (right - left) * 100          (from -100 to +100)
 
-      error > 0 → робот сместился вправо (правый датчик белее) → рулим влево
-      error < 0 → сместился влево → рулим вправо
+      error > 0 -> the robot went right (right sensor is whiter) -> steer left
+      error < 0 -> it went left -> steer right
 
-    ЧТО ДЕЛАЕТ, ЧТОБЫ НЕ ТЕРЯТЬСЯ
+    WHAT MAKES IT NOT LOSE THE LINE
 
-      1. Автокалибровка: диапазон «чёрное..белое» запоминается по факту,
-         поэтому робот работает и когда датчики стоят на краях линии
-         (видят «серое»), и когда они разнесены шире линии.
+      1. Auto calibration: the "black..white" range is learned from the
+         real readings, so it works both when the sensors sit on the
+         edges of the line (they see "grey") and when they are wider
+         than the line.
 
-      2. Сглаживание показаний и мёртвая зона — чтобы шум датчиков
-         не превращался в дёрганье рулём.
+      2. Sensor smoothing and a dead band - sensor noise does not turn
+         into steering twitching.
 
-      3. Три скорости с гистерезисом: ушёл от линии — сразу сбросил
-         скорость, вернулся — снова быстро. В повороте не проскакивает.
+      3. Three speeds with hysteresis: off the line - speed drops at
+         once, back on the line - fast again. It cannot overshoot a turn.
 
-      4. Если линия оказалась МЕЖДУ датчиками (оба видят белое, но робот
-         только что шёл ровно) — это не потеря: едем дальше «вслепую»,
-         повторяя последний руль, до blind_coast секунд.
+      4. If the line is BETWEEN the sensors (both see white, but the
+         robot was driving straight a moment ago) - this is not a loss:
+         keep driving with the last steering for up to blind_coast s.
 
-      5. Настоящая потеря → поиск по фазам:
-           0) пол-оборота на месте вправо,
-           1) полный оборот на месте влево (перекрывает всё),
-           2) узкая дуга вправо / влево,
-           3) широкая дуга,
-           4) обзорный проезд вперёд,
-           5) спираль наружу,
-           6) откат назад по своим следам.
-         При старте со сдвигом/под углом линия находится за 1-2 секунды.
+      5. A real loss -> search in phases:
+           0) half a turn on the spot to the right,
+           1) a full turn on the spot to the left (covers everything),
+           2) narrow arc right / left,
+           3) wide arc,
+           4) a look-around run forward,
+           5) a spiral outwards,
+           6) back up along its own tracks.
+         With a shifted or angled start the line is found in 1-2 s.
 
     update(refl_left, refl_right, dt) -> (speed_mm_s, steer)
-    steer: +1 — правое колесо быстрее (поворот влево), -1 — наоборот.
+    steer: +1 - the right wheel spins faster (turn left), -1 - the other way.
     """
 
     def __init__(self, cfg=None):
@@ -295,14 +333,15 @@ class LineFollower(object):
     # --------------------------------------------------------
     def norm(self, reflection, which=0):
         """
-        Автокалибровка: диапазон начинается с паспортных black_ref..white_ref
-        и только РАСШИРЯЕТСЯ, если датчик увидел что-то темнее/светлее:
+        Auto calibration: the range starts with black_ref..white_ref and
+        only WIDENS when the sensor sees something darker or brighter:
 
-            lo = min(lo, показание)      hi = max(hi, показание)
+            lo = min(lo, reading)      hi = max(hi, reading)
 
-        Диапазон не «уползает» и не сжимается — значит робот, у которого
-        датчики смотрят на края линии и видят «серое» (45-55), всё равно
-        считает это линией (≈0.45), а белое поле — белым (≈0.97).
+        The range never drifts and never shrinks - so a robot whose
+        sensors look at the edges of the line and see "grey" (45-55)
+        still counts it as the line (about 0.45), and a white floor as
+        white (about 0.97).
         """
         cfg = self.cfg
         if which == 0:
@@ -764,17 +803,297 @@ def check_sensors():
 
 
 # ============================================================
+#  AUTO UPDATE FROM GITHUB
+#    MODE = 'update'                -> force this update
+#    MODE = 'run' + AUTO_UPDATE_AT_START
+#                                   -> update first, then drive
+#  Downloads REPO_FILE from the raw branch of the repository,
+#  compares it with this file and replaces this file if newer.
+#  Safety: the download is only accepted if the new file is
+#  valid Python (compiles) and contains the marker RUN MODE.
+#  The old file is kept next to this one as robot.py.old.
+# ============================================================
+
+PY3 = (sys.version_info[0] >= 3)
+UPDATE_MARKER = 'RUN MODE'          # must be in every valid version
+OLD_SUFFIX = '.old'
+BOM = b'\xef\xbb\xbf'
+
+REPO_URL = ('https://github.com/%s/%s' % (REPO_OWNER, REPO_NAME))
+ZIP_URL = ('https://github.com/%s/%s/archive/refs/heads/%%s.zip'
+           % (REPO_OWNER, REPO_NAME))
+RAW_URL = ('https://raw.githubusercontent.com/%s/%s/%%s/%%s'
+           % (REPO_OWNER, REPO_NAME))
+
+
+def branch_from_url(url):
+    """Guess the branch from the address this file was downloaded from."""
+    if not url:
+        return ''
+    url = url.replace('\\', '/').strip().split('?')[0]
+    # raw.githubusercontent.com/<owner>/<repo>/<branch...>/<file>
+    if 'raw.githubusercontent.com/' in url:
+        tail = url.split('raw.githubusercontent.com/', 1)[1]
+        parts = [p for p in tail.split('/') if p]
+        if len(parts) >= 4:
+            return '/'.join(parts[2:-1])
+        return ''
+    for marker in ('/blob/', '/raw/', '/refs/heads/'):
+        if marker in url:
+            rest = url.split(marker, 1)[1]
+            if '/' in rest:
+                branch = rest.rsplit('/', 1)[0].strip('/')
+            else:
+                branch = rest.strip('/')
+            if branch.endswith('.zip'):
+                branch = branch[:-len('.zip')]
+            return branch
+    return ''
+
+
+def branch_of_this_file():
+    """Branch used for the update: AUTO_UPDATE_BRANCH, link, then 'main'."""
+    if AUTO_UPDATE_BRANCH:
+        return AUTO_UPDATE_BRANCH.strip('/')
+    for arg in sys.argv:
+        found = branch_from_url(arg)
+        if found:
+            return found
+    this_dir = ''
+    try:
+        this_dir = globals().get('__file__') or ''
+    except Exception:
+        this_dir = ''
+    found = branch_from_url(this_dir)
+    if found:
+        return found
+    for var in ('VSCODE_CWD', 'PWD', 'OLDPWD', 'HOME'):
+        try:
+            found = branch_from_url(os.environ.get(var, ''))
+        except Exception:
+            found = ''
+        if found:
+            return found
+    return 'main'
+
+
+def script_path():
+    """Full path of this file."""
+    try:
+        path = os.path.abspath(globals().get('__file__') or REPO_FILE)
+    except Exception:
+        path = REPO_FILE
+    if not os.path.isdir(os.path.dirname(path) or '.'):
+        return os.path.join(os.getcwd(), REPO_FILE)
+    return path
+
+
+def http_get(url, timeout=UPDATE_TIMEOUT):
+    """Download a URL -> bytes (or None). Tries https, then http, then curl/wget."""
+    # 1) urllib over https
+    try:
+        import ssl
+        import urllib.request
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE      # old EV3 root certificates
+        req = urllib.request.Request(url, headers={'User-Agent': 'EV3-robolab'})
+        return urllib.request.urlopen(req, timeout=timeout, context=ctx).read()
+    except Exception as err:
+        log('  https download failed: %s' % err)
+    # 2) urllib over plain http
+    if url.startswith('https://'):
+        try:
+            import urllib.request
+            plain = 'http://' + url[len('https://'):]
+            req = urllib.request.Request(plain, headers={'User-Agent': 'EV3-robolab'})
+            return urllib.request.urlopen(req, timeout=timeout).read()
+        except Exception as err:
+            log('  http download failed: %s' % err)
+    # 3) curl / wget from the shell
+    for cmd in (['curl', '-L', '--max-time', str(timeout)], ['wget', '-qO', '-']):
+        try:
+            import subprocess
+            out = subprocess.Popen(cmd + [url], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE).communicate()[0]
+            if out:
+                return out
+        except Exception:
+            pass
+    return None
+
+
+def text_of(data):
+    """bytes -> str, tolerant to BOM and broken bytes."""
+    if data is None:
+        return None
+    if data.startswith(BOM):
+        data = data[len(BOM):]
+    try:
+        return data.decode('utf-8')
+    except Exception:
+        return None
+
+
+def data_of(text):
+    """str -> bytes for saving, keeps the file ASCII-safe."""
+    if PY3:
+        return text.encode('utf-8')
+    return text
+
+
+def line_count(text):
+    return len(text.replace('\r\n', '\n').split('\n'))
+
+
+def is_valid_program(text):
+    """The download may replace this file only if it looks like the program."""
+    if not text or len(text) < 2000:
+        return 'file is too short (%d bytes)' % (0 if not text else len(text))
+    if UPDATE_MARKER not in text or 'def main(' not in text:
+        return 'no RUN MODE / main() in the file - not this program'
+    try:
+        compile(text.replace('\r\n', '\n'), REPO_FILE, 'exec')
+    except SyntaxError as err:
+        return 'downloaded file has a syntax error: %s' % err
+    except Exception as err:
+        return 'downloaded file cannot be checked: %s' % err
+    return ''
+
+
+def read_local(path):
+    try:
+        handle = open(path, 'rb')
+    except IOError:
+        return None
+    try:
+        return text_of(handle.read())
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
+def write_local(path, text):
+    """Write through a temporary file + rename (a crash keeps the old file)."""
+    tmp = path + '.new'
+    out = open(tmp, 'wb')
+    try:
+        out.write(data_of(text))
+        out.flush()
+        try:
+            out.flush()
+            os.fsync(out.fileno())
+        except Exception:
+            pass
+    finally:
+        try:
+            out.close()
+        except Exception:
+            pass
+    if os.path.exists(path):
+        if os.path.exists(path + OLD_SUFFIX):
+            os.remove(path + OLD_SUFFIX)
+        os.rename(path, path + OLD_SUFFIX)
+    os.rename(tmp, path)
+
+
+def run_update(fetch_only=False, show_head=False):
+    """
+    Check GitHub for a new robot.py.
+      fetch_only = True  -> only look, never write anything
+      show_head  = True  -> print the head of the downloaded file
+    Returns True when this file was replaced (or an update is available).
+    """
+    branch = branch_of_this_file()
+    path = script_path()
+    url = RAW_URL % (branch, REPO_FILE)
+    old = read_local(path)
+
+    log('=== auto update from GitHub ===')
+    log('repo   : %s' % REPO_URL)
+    log('branch : %s' % branch)
+    log('file   : %s' % path)
+    log('url    : %s' % url)
+    log('local line count: %d' % (0 if old is None else line_count(old)))
+    log('downloading ...')
+
+    text = text_of(http_get(url))
+    if text is None:
+        log('FAILED: no answer from GitHub (no network?).')
+        log('Download by hand: %s/blob/%s/%s' % (REPO_URL, branch, REPO_FILE))
+        log('Or the archive  : %s' % (ZIP_URL % branch))
+        return False
+
+    problem = is_valid_program(text)
+    if problem:
+        log('FAILED: %s' % problem)
+        log('This file is left untouched.')
+        return False
+
+    new_lines = line_count(text)
+    log('network line count: %d' % new_lines)
+
+    if show_head:
+        log('--- first 25 lines of the downloaded file ---')
+        for row in text.replace('\r\n', '\n').split('\n')[:25]:
+            log(row)
+
+    if old is not None and old.replace('\r\n', '\n') == text.replace('\r\n', '\n'):
+        log('already the newest version - nothing to do')
+        return False
+
+    if fetch_only:
+        log('update IS available (%d -> %d lines)' % (line_count(old or ''), new_lines))
+        log('to install it: set MODE = \'update\' and run again')
+        return True
+
+    try:
+        write_local(path, text)
+    except Exception as err:
+        log('FAILED to write the file: %s' % err)
+        log('Check that the file is not read-only.')
+        return False
+
+    log('UPDATED: %d -> %d lines' % (0 if old is None else line_count(old), new_lines))
+    log('old version saved as %s%s' % (path, OLD_SUFFIX))
+    log('undo: rename %s%s back to %s'
+        % (path, OLD_SUFFIX, os.path.basename(path)))
+    return True
+
+
+# ============================================================
 #  START
 # ============================================================
 
-if __name__ == '__main__':
+def start():
     if MODE == 'stay':
         log('MODE = stay: nothing to do')
-    elif not HAS_ROBOT:
+        return
+    if MODE == 'update' or '--update' in sys.argv:
+        run_update()
+        return
+    if '--update-check' in sys.argv:
+        run_update(fetch_only=True)
+        return
+    if MODE == 'check' or '--check' in sys.argv:
+        if not HAS_ROBOT:
+            log('No robot libraries found (PC) - sensor check needs the robot.')
+            return
+        check_sensors()
+        return
+    if not HAS_ROBOT:
         log('No robot libraries found (PC).')
         log('Simulator: python3 tools/sim.py')
         log('Stress test: python3 tools/stress.py')
-    elif MODE == 'check' or '--check' in sys.argv:
-        check_sensors()
-    else:
-        main()
+        log('Update check: python3 robot.py --update-check')
+        return
+    # ---- normal start: optional auto update, then drive ----
+    if AUTO_UPDATE_AT_START:
+        run_update(fetch_only=True)
+    main()
+
+
+if __name__ == '__main__':
+    start()
