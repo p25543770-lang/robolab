@@ -1,45 +1,33 @@
 {
-    // Запуск по F5. Прошивка у вас ev3dev (команда brickrun),
-    // поэтому РАБОЧАЯ конфигурация - первая:
-    //   "EV3 (ev3dev): залить и запустить"
-    // Она копирует robot.py на кирпич по SSH и запускает его там командой brickrun.
-    // Пароль кирпича ev3dev по умолчанию: maker
-    //
-    // Конфигурации с pybricksdev оставлены только для прошивки Pybricks:
-    // на ev3dev они падают с ошибкой "usb.core.NoBackendError: No backend available".
+    // F5 запускает ОТКРЫТЫЙ файл robot.py на компьютере (робот не нужен,
+    // на ПК программа просто печатает подсказку и не падает).
+    // На самом кирпиче файл обновляется сам: при каждом запуске
+    // MODE = 'run' он проверяет GitHub, скачивает свежий robot.py и
+    // сразу едет уже новым кодом. Заливать руками нужно только один раз.
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "EV3 (ev3dev): залить и запустить",
+            "name": "robot.py (запуск на компьютере)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/tools/upload.py",
+            "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true
         },
         {
-            "name": "EV3 (ev3dev): залить и проверить датчики",
+            "name": "robot.py: проверить, есть ли обновление (ничего не меняет)",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/tools/upload.py",
-            "args": ["--check"],
+            "program": "${workspaceFolder}/robot.py",
+            "args": ["--update-check"],
             "console": "integratedTerminal",
             "justMyCode": true
         },
         {
-            "name": "EV3 (ev3dev): только залить (без запуска)",
+            "name": "robot.py: обновить файл с GitHub",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/tools/upload.py",
-            "args": ["--no-run"],
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
-        {
-            "name": "EV3 (ev3dev): обновить программу с GitHub",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/tools/upload.py",
+            "program": "${workspaceFolder}/robot.py",
             "args": ["--update"],
             "console": "integratedTerminal",
             "justMyCode": true
@@ -57,15 +45,6 @@
             "request": "launch",
             "program": "${workspaceFolder}/tools/stress.py",
             "console": "integratedTerminal"
-        },
-        {
-            "name": "Pybricks (только для прошивки Pybricks): залить по USB",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pybricksdev",
-            "args": ["run", "usb", "${workspaceFolder}/robot.py"],
-            "console": "integratedTerminal",
-            "justMyCode": true
         }
     ]
 }

@@ -49,8 +49,17 @@ text raises UnicodeEncodeError there.
 
 AUTO UPDATE FROM GITHUB
 
-    MODE = 'update' downloads the newest robot.py from GitHub and
-    replaces this file (the old one is kept as robot.py.old).
+    The file updates itself. On every start (MODE = 'run') it asks
+    GitHub for the newest robot.py and, if there is a newer one, it
+    replaces itself and CONTINUES to drive with the new code.
+    The previous version is kept next to it as robot.py.old.
+
+    MODE = 'update'  - update only, then stop (does not drive).
+    --update         - the same from the command line.
+    --update-check   - only look, never write (safe on the computer).
+    AUTO_UPDATE_AT_START = True in the settings below.
+    AUTO_UPDATE_QUIET    = True - print only the result, not the details.
+    No network / no GitHub -> a short warning, then the program drives.
 
     Which branch is used, in this order:
       1) AUTO_UPDATE_BRANCH below, if it is not ''
@@ -82,16 +91,21 @@ MODE = 'run'
 # ------------------------------------------------------------
 AUTO_UPDATE_BRANCH = ''
 
-#  True  - on MODE = 'run' first ASK GitHub if a newer version exists
-#          and print the answer (the file is NOT replaced then,
-#          so a competition run always uses the file you tested)
-#  False - no network on start
+#  True  - on every start (MODE = 'run') download the newest robot.py
+#          and, if it is newer, replace this file and drive the new
+#          code right away (old file stays as robot.py.old)
+#  False - never touch the file, just drive
 AUTO_UPDATE_AT_START = True
+
+#  True  - only the result is printed (4 lines), False - full details
+AUTO_UPDATE_QUIET = True
 
 REPO_OWNER = 'p25543770-lang'
 REPO_NAME = 'robolab'
 REPO_FILE = 'robot.py'
-UPDATE_TIMEOUT = 12          # seconds for one HTTP request
+UPDATE_TIMEOUT = 12          # seconds for one HTTP request (MODE = 'update')
+UPDATE_TIMEOUT_START = 6     # the same at start: shorter, so a robot
+                             # without Wi-Fi drives after a few seconds
 
 # ============================================================
 #  PLATFORM DETECTION
@@ -907,7 +921,8 @@ def http_get(url, timeout=UPDATE_TIMEOUT):
         req = urllib.request.Request(url, headers={'User-Agent': 'EV3-robolab'})
         return urllib.request.urlopen(req, timeout=timeout, context=ctx).read()
     except Exception as err:
-        log('  https download failed: %s' % err)
+        if _UPDATE_VERBOSE:
+            log('  https download failed: %s' % err)
     # 2) urllib over plain http
     if url.startswith('https://'):
         try:
@@ -916,7 +931,8 @@ def http_get(url, timeout=UPDATE_TIMEOUT):
             req = urllib.request.Request(plain, headers={'User-Agent': 'EV3-robolab'})
             return urllib.request.urlopen(req, timeout=timeout).read()
         except Exception as err:
-            log('  http download failed: %s' % err)
+            if _UPDATE_VERBOSE:
+                log('  http download failed: %s' % err)
     # 3) curl / wget from the shell
     for cmd in (['curl', '-L', '--max-time', str(timeout)], ['wget', '-qO', '-']):
         try:
@@ -1037,46 +1053,127 @@ def write_local(path, text):
     os.rename(tmp, path)
 
 
-def run_update(fetch_only=False, show_head=False):
+UPDATE_CACHE_MIN = 30       # do not ask GitHub more often than this (minutes)
+_UPDATE_VERBOSE = True      # False while the update runs in quiet mode
+UPDATE_CACHE_FILE = 'robot.check'
+
+
+def update_cache_path():
+    """Where the time of the last successful check is stored."""
+    path = script_path()
+    return os.path.join(os.path.dirname(path) or '.', UPDATE_CACHE_FILE)
+
+
+def read_cache_stamp(cache, current_text):
     """
-    Check GitHub for a new robot.py.
+    Return True if GitHub was asked less than UPDATE_CACHE_MIN minutes
+    ago AND the file was not changed since then (no clock on the EV3, so
+    the time is taken from the file modification time).
+    """
+    try:
+        info = os.stat(cache)
+    except Exception:
+        return False
+    try:
+        import time as _time
+        age_min = (_time.time() - info.st_mtime) / 60.0
+    except Exception:
+        return False
+    if age_min < 0 or age_min > UPDATE_CACHE_MIN:
+        return False
+    try:
+        handle = open(cache, 'rb')
+        try:
+            saved = text_of(handle.read()) or ''
+        finally:
+            handle.close()
+    except Exception:
+        return False
+    # the cached stamp holds the length of the file that was checked
+    return saved.strip() == str(len(current_text))
+
+
+def write_cache_stamp(cache, checked_text):
+    try:
+        handle = open(cache, 'wb')
+        try:
+            handle.write(data_of(str(len(checked_text))))
+        finally:
+            handle.close()
+    except Exception:
+        pass
+
+
+
+
+def run_update(fetch_only=False, show_head=False, quiet=False, quick=False):
+    """
+    Check GitHub for a new robot.py and install it.
       fetch_only = True  -> only look, never write anything
       show_head  = True  -> print the head of the downloaded file
-    Returns True when this file was replaced (or an update is available).
+      quiet      = True  -> a few lines instead of the full log
+      quick      = True  -> one short attempt (used on start: a robot
+                            without Wi-Fi must drive, not wait)
+    Returns True only when this file on the disk was really replaced.
     """
+    global _UPDATE_VERBOSE
+    _UPDATE_VERBOSE = not quiet
     branch = branch_of_this_file()
     path = script_path()
     url = RAW_URL % (branch, REPO_FILE)
     old = read_local(path)
 
-    log('=== auto update from GitHub ===')
-    log('repo   : %s' % REPO_URL)
-    log('branch : %s' % branch)
-    log('file   : %s' % path)
-    log('url    : %s' % url)
-    log('local line count: %d' % (0 if old is None else line_count(old)))
-    log('downloading ...')
+    if quiet:
+        log('update: checking GitHub (%s, branch %s) ...' % (REPO_NAME, branch))
+    else:
+        log('=== auto update from GitHub ===')
+        log('repo   : %s' % REPO_URL)
+        log('branch : %s' % branch)
+        log('file   : %s' % path)
+        log('url    : %s' % url)
+        log('local line count: %d' % (0 if old is None else line_count(old)))
+        log('downloading ...')
 
-    text = download_program(branch)
+    # ---- remember the answer for a while: the EV3 has no clock and
+    # ---- every start should not wait for the network
+    cache = update_cache_path()
+    stamp = read_cache_stamp(cache, old or '')
+    if stamp and not fetch_only:
+        if quiet:
+            log('update: checked less than %d min ago - skipping'
+                % (UPDATE_CACHE_MIN * 60 // 60))
+        else:
+            log('update: the last check was %d min ago - skipping'
+                % UPDATE_CACHE_MIN)
+        return False
+
+    if quick:
+        text = text_of(http_get(RAW_URL % (branch, REPO_FILE),
+                                timeout=UPDATE_TIMEOUT_START))
+    else:
+        text = download_program(branch)
+        if text is None:
+            if not quiet:
+                log('raw file is not reachable - trying the zip archive of the branch')
+            text = script_from_zip(http_get(ZIP_REF_URL % branch))
+        if text is None:
+            text = script_from_zip(http_get(ZIP_CODELOAD_URL % branch))
     if text is None:
-        log('raw file is not reachable - trying the zip archive of the branch')
-        text = script_from_zip(http_get(ZIP_REF_URL % branch))
-    if text is None:
-        text = script_from_zip(http_get(ZIP_CODELOAD_URL % branch))
-    if text is None:
-        log('FAILED: no answer from GitHub (no network?).')
-        log('Download by hand: %s/blob/%s/%s' % (REPO_URL, branch, REPO_FILE))
-        log('Or the archive  : %s' % (ZIP_URL % branch))
+        log('update: no answer from GitHub (no network?) - driving the current version')
+        if not quiet:
+            log('Download by hand: %s/blob/%s/%s' % (REPO_URL, branch, REPO_FILE))
+            log('Or the archive  : %s' % (ZIP_URL % branch))
         return False
 
     problem = is_valid_program(text)
     if problem:
-        log('FAILED: %s' % problem)
-        log('This file is left untouched.')
+        log('update: %s' % problem)
+        log('update: this file is left untouched - driving the current version')
         return False
 
     new_lines = line_count(text)
-    log('network line count: %d' % new_lines)
+    if not quiet:
+        log('network line count: %d' % new_lines)
 
     if show_head:
         log('--- first 25 lines of the downloaded file ---')
@@ -1084,13 +1181,14 @@ def run_update(fetch_only=False, show_head=False):
             log(row)
 
     if old is not None and old.replace('\r\n', '\n') == text.replace('\r\n', '\n'):
-        log('already the newest version - nothing to do')
+        write_cache_stamp(cache, text)
+        log('update: this is the newest version')
         return False
 
     if fetch_only:
         log('update IS available (%d -> %d lines)' % (line_count(old or ''), new_lines))
-        log('to install it: set MODE = \'update\' and run again')
-        return True
+        log('run again with MODE = \'run\' (or MODE = \'update\') to install it')
+        return False
 
     try:
         write_local(path, text)
@@ -1100,11 +1198,49 @@ def run_update(fetch_only=False, show_head=False):
         log('Put robot.py into /home/robot (that folder is writable).')
         return False
 
-    log('UPDATED: %d -> %d lines' % (0 if old is None else line_count(old), new_lines))
-    log('old version saved as %s%s' % (path, OLD_SUFFIX))
-    log('undo: rename %s%s back to %s'
-        % (path, OLD_SUFFIX, os.path.basename(path)))
+    write_cache_stamp(cache, text)
+    log('update: UPDATED to the newest version (%d -> %d lines)'
+        % (0 if old is None else line_count(old), new_lines))
+    if not quiet:
+        log('old version saved as %s%s' % (path, OLD_SUFFIX))
+        log('undo: rename %s%s back to %s'
+            % (path, OLD_SUFFIX, os.path.basename(path)))
     return True
+
+
+def restart_with_new_code():
+    """
+    The file on the disk was just replaced by the newest version.
+    Run that new code right now (the running copy is the old one):
+    this is a plain exec, so no clock, no network and no extra
+    modules are needed - it works the same on ev3dev and Pybricks.
+    """
+    path = script_path()
+    text = read_local(path)
+    problem = is_valid_program(text)
+    if problem:
+        log('update: the new file is not usable (%s) - driving the old code' % problem)
+        main()
+        return
+    log('update: starting the new version now')
+    namespace = {'__name__': 'robot_after_update', '__file__': path}
+    try:
+        code = compile(text.replace('\r\n', '\n'), path, 'exec')
+        exec(code, namespace)
+        entry = namespace.get('start')
+        if entry is None:
+            entry = namespace.get('main')
+        if entry is None:
+            log('update: the new file has no start() - driving the old code')
+            main()
+            return
+        entry()
+        return
+    except SystemExit:
+        return
+    except Exception as err:
+        log('update: the new version failed (%s) - driving the old code' % err)
+        main()
 
 
 # ============================================================
@@ -1133,9 +1269,14 @@ def start():
         log('Stress test: python3 tools/stress.py')
         log('Update check: python3 robot.py --update-check')
         return
-    # ---- normal start: optional auto update, then drive ----
+    # ---- normal start: update itself, then drive ----
     if AUTO_UPDATE_AT_START:
-        run_update(fetch_only=True)
+        updated = run_update(quiet=AUTO_UPDATE_QUIET, quick=True)
+        if updated:
+            # the file on the disk is new now; drive exactly the code
+            # that just arrived (the running copy is still the old one)
+            restart_with_new_code()
+            return
     main()
 
 
