@@ -58,7 +58,9 @@ class Settings(object):
     wheel_diameter_mm = 56.0    # диаметр колеса (у больших колёс EV3 — 56)
     axle_track_mm = 150.0       # расстояние между центрами колёс — ИЗМЕРЬТЕ линейкой
     gear_ratio = 2.0            # редуктор 2:1 — малая шестерня на моторе,
-                                # большая на колесе (колесо крутится в 2 раза медленнее)
+                                # большая на колесе:
+                                # 2 оборота мотора = 1 оборот колеса
+                                # (720° мотора = 360° колеса)
     left_motor_reversed = True  # левый мотор стоит «наоборот» → в программе реверс
     right_motor_reversed = False
 
@@ -310,6 +312,14 @@ if HAS_ROBOT:
         robot.beep(2)
 
         # ---------- 1. выезд из зоны старта: 50 см прямо ----------
+        # показываем на экране, во что верим: 2 оборота мотора = 1 оборот колеса
+        print('редуктор %.0f:1 — на 1 оборот колеса нужно %.0f° мотора'
+              % (cfg.gear_ratio, 360.0 * cfg.gear_ratio))
+        print('на %.0f мм пути: мотор %.0f° (%.2f оборота), колесо %.2f оборота'
+              % (cfg.start_straight_mm,
+                 cfg.start_straight_mm * robot.motor_deg_per_mm,
+                 cfg.start_straight_mm * robot.motor_deg_per_mm / 360.0,
+                 cfg.start_straight_mm / (3.14159265 * cfg.wheel_diameter_mm)))
         robot.straight(cfg.start_straight_mm, cfg.start_speed_mm_s)
         print('проехали %.0f мм — включаю линию' % cfg.start_straight_mm)
 
@@ -348,10 +358,13 @@ if HAS_ROBOT:
         cfg = Settings()
         robot = Robot(cfg)
         print('проверка: 1-левый свет, 2-правый свет, 3-расстояние (Ctrl+C — выход)')
+        print('поставьте робота на линию: S1 и S2 должны быть маленькими (0-20),')
+        print('на белом поле — большими (70-95)')
+        robot.reset_travel()
         while True:
-            print('S1=%3d  S2=%3d   S3=%4d мм'
+            print('S1=%3d  S2=%3d   S3=%4d мм   путь=%.0f мм'
                   % (robot.reflection_left(), robot.reflection_right(),
-                     robot.distance_mm()))
+                     robot.distance_mm(), robot.travel_mm()))
             wait(300)
 
 
