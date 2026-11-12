@@ -15,7 +15,7 @@ rem  It is read from the file itself and executed in memory:
 rem  nothing extra is downloaded to the disk and nothing is
 rem  unpacked next to your files.
 rem ---------------------------------------------------------------
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$l = Get-Content -LiteralPath $env:ROBOLAB_SELF; $i = 0; while ($i -lt $l.Count -and $l[$i] -notmatch 'PowerShell part starts below') { $i = $i + 1 }; Invoke-Expression (($l[($i + 1)..($l.Count - 1)]) -join [Environment]::NewLine)"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$l = Get-Content -LiteralPath $env:ROBOLAB_SELF; $i = 0; while ($i -lt $l.Count -and $l[$i] -notmatch '^rem #### POWERSHELL PART BELOW ####$') { $i = $i + 1 }; Invoke-Expression (($l[($i + 1)..($l.Count - 1)]) -join [Environment]::NewLine)"
 if errorlevel 1 goto failed
 goto end
 
@@ -34,7 +34,7 @@ endlocal
 
 rem  ---- never run the PowerShell lines as batch commands ----
 exit /b 0
-rem ===== PowerShell part starts below (do not delete these marks) =====
+rem #### POWERSHELL PART BELOW ####
 # ===================================================================
 #  robolab - updates itself and uploads to the brick
 #    step 1: downloads the newest project from GitHub
