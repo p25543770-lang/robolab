@@ -2,58 +2,104 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================
- robot.py — полигон 1 «Большое путешествие»
- «Следование по линии с движущимся препятствием»
+ robot.py - polygon 1 "Big journey"
+ "Line following with a moving obstacle"
 ================================================================
 
-ЧТО ДЕЛАЕТ РОБОТ
+WHAT THE ROBOT DOES
 
-  1. Старт: едет ПРЯМО 50 см (выезжает из зелёной зоны A).
-  2. Дальше ВЕДЁТ ПО ЛИНИИ — двумя датчиками отражённого света.
-     Ведение сделано максимально «неубиваемым»: три скорости,
-     ПИД с фильтрами, автокалибровка датчиков и продуманный
-     поиск линии, если она всё-таки потерялась.
-  3. Увидел ОБЪЕКТ впереди (ультразвук) ближе 250 мм —
-     останавливается и пищит.
+  1. Start: drives STRAIGHT 50 cm (leaves the green start zone A).
+  2. Then FOLLOWS THE LINE with two reflection light sensors.
+     The line follower is made as unbreakable as possible:
+     three speeds, PID with filters, auto-calibration of the
+     sensors and a multi-phase line search.
+  3. Sees an OBSTACLE ahead (front ultrasonic closer than 250 mm) -
+     stops and beeps.
+  4. Watches the RIGHT ultrasonic (port 4 / D): it detects an
+     obstacle on the right side (prints a message, ready for the
+     bypass later).
 
-РАСКЛАДКА (как на роботе)
+PORTS (as on this robot)
 
-    1 — ЛЕВЫЙ датчик отражённого света  (снизу)
-    2 — ПРАВЫЙ датчик отражённого света (снизу)
-    3 — ультразвук ВПЕРЁД
-    C — ЛЕВОЕ колесо   (мотор стоит зеркально → в программе реверс)
-    B — ПРАВОЕ колесо
+    1 - LEFT  reflection light sensor (bottom)
+    2 - RIGHT reflection light sensor (bottom)
+    3 - ultrasonic FRONT
+    4 - ultrasonic RIGHT (port D)
+    C - LEFT  motor (mounted mirrored -> reversed in the program)
+    B - RIGHT motor
 
-    Редуктор 2:1 на колёсах: 2 оборота мотора = 1 оборот колеса.
+    Gear 2:1 on both wheels: 2 motor turns = 1 wheel turn.
 
-ЗАПУСК
+RUN MODES (change MODE right below)
 
-    MODE = 'run'    → поехали
-    MODE = 'check'  → проверка датчиков, моторы НЕ крутятся
-    (переменная MODE — в начале файла, сразу после заголовка)
+    'run'   - drive
+    'check' - sensor check, motors DO NOT move
+    'stay'  - do nothing
 
-Файл самодостаточный: на EV3 заливается только он (Pybricks).
-Логику ведения (класс LineFollower) использует и симулятор
-tools/sim.py — поэтому импорт pybricks необязательный.
+PLATFORMS
+
+    ev3dev  : brickrun --directory="/home/robot/robolabs2" robot.py
+    Pybricks: pybricksdev run usb robot.py   (or F5 in VS Code)
+    PC      : python3 tools/sim.py
+
+The file detects the platform by itself. All terminal messages are
+pure ASCII on purpose: the EV3 console is ASCII-only and Cyrillic
+text raises UnicodeEncodeError there.
 ================================================================
 """
 
+import sys
+import time
+
 # ============================================================
-#  РЕЖИМ ЗАПУСКА
-#  'run'   — поехали (обычный заезд)
-#  'check' — проверка датчиков, моторы НЕ крутятся
-#  Меняется здесь, одной строкой; флаг --check тоже работает.
+#  RUN MODE
 # ============================================================
 MODE = 'run'
 
-try:
-    from pybricks.hubs import EV3Brick
-    from pybricks.ev3devices import Motor, ColorSensor, UltrasonicSensor
-    from pybricks.parameters import Port
-    from pybricks.tools import wait
-    HAS_ROBOT = True
-except ImportError:                       # запуск на компьютере
-    HAS_ROBOT = False
+# ============================================================
+#  PLATFORM DETECTION
+#    EV3DEV   - standard ev3dev image + ev3dev2 library
+#    PYBRICKS - Pybricks firmware
+#    neither  - computer (simulator only)
+# ============================================================
+EV3DEV = False
+PYBRICKS = False
+
+try:                                   # --- ev3dev ---
+    from ev3dev2.motor import LargeMotor, OUTPUT_B, OUTPUT_C
+    from ev3dev2.sensor.lego import ColorSensor, UltrasonicSensor
+    from ev3dev2.sensor import INPUT_1, INPUT_2, INPUT_3, INPUT_4
+    from ev3dev2.sound import Sound
+    EV3DEV = True
+except ImportError:
+    pass
+
+if not EV3DEV:
+    try:                               # --- Pybricks ---
+        from pybricks.hubs import EV3Brick
+        from pybricks.ev3devices import Motor, ColorSensor, UltrasonicSensor
+        from pybricks.parameters import Port
+        from pybricks.tools import wait as pb_wait
+        PYBRICKS = True
+    except ImportError:
+        pass
+
+HAS_ROBOT = EV3DEV or PYBRICKS
+
+
+def log(text):
+    """Safe print: the EV3 console is ASCII-only."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode('ascii', 'replace').decode('ascii'))
+
+
+def wait_ms(ms):
+    if PYBRICKS:
+        pb_wait(ms)
+    else:
+        time.sleep(ms / 1000.0)
 
 
 # ============================================================
@@ -140,6 +186,10 @@ class Settings(object):
     # ---------- объект впереди ----------
     stop_mm = 250.0             # ближе — считаем, что впереди объект
     sonar_max_mm = 1200.0       # дальше не смотрим (шум датчика)
+
+    # ---------- объект справа (датчик 4 / порт D) ----------
+    side_near_mm = 350.0        # ближе — помеха рядом справа
+    log_every = 0.5             # с — как часто печатать правый датчик в 'check'
 
     # ---------- прочее ----------
     loop_ms = 10                # период цикла управления, мс
@@ -492,164 +542,239 @@ class LineFollower(object):
 
 
 # ============================================================
-#  ЖЕЛЕЗО: моторы, датчики, движения
+#  HARDWARE: motors, sensors
+#    The same Robot class works on ev3dev and on Pybricks.
+#    Ports:  C = left motor, B = right motor,
+#            1 = left light, 2 = right light,
+#            3 = front sonar, 4 (D) = right sonar
 # ============================================================
 
-if HAS_ROBOT:
+class Robot(object):
 
-    class Robot(object):
-        """Моторы B (правое) и C (левое), датчики 1, 2, 3."""
+    def __init__(self, cfg=None):
+        self.cfg = cfg or Settings()
 
-        def __init__(self, cfg=None):
-            self.cfg = cfg or Settings()
+        if EV3DEV:
+            # ---------- ev3dev ----------
+            self.left_motor = LargeMotor(OUTPUT_C)      # C - left
+            self.right_motor = LargeMotor(OUTPUT_B)     # B - right
+            self.sensor_left = ColorSensor(INPUT_1)     # 1 - left light
+            self.sensor_right = ColorSensor(INPUT_2)    # 2 - right light
+            self.sonar = UltrasonicSensor(INPUT_3)      # 3 - front
+            self.sonar_side = UltrasonicSensor(INPUT_4)  # 4 / D - right
+            self.sound = Sound()
+            # ev3dev: reflected light is already 0..100 percent
+            self._refl_scale = 1.0
+            self._dist_units = 1.0          # ctypes distance is in 0.1 mm
+        else:
+            # ---------- Pybricks ----------
             self.brick = EV3Brick()
-            self.left_motor = Motor(Port.C)            # C — левое колесо
-            self.right_motor = Motor(Port.B)           # B — правое колесо
-            self.sensor_left = ColorSensor(Port.S1)    # 1 — левый снизу
-            self.sensor_right = ColorSensor(Port.S2)   # 2 — правый снизу
-            self.sonar = UltrasonicSensor(Port.S3)     # 3 — ультразвук вперёд
+            self.left_motor = Motor(Port.C)
+            self.right_motor = Motor(Port.B)
+            self.sensor_left = ColorSensor(Port.S1)
+            self.sensor_right = ColorSensor(Port.S2)
+            self.sonar = UltrasonicSensor(Port.S3)
+            self.sonar_side = UltrasonicSensor(Port.S4)
+            self._refl_scale = 1.0
+            self._dist_units = 1.0
 
-            # сколько градусов МОТОРА на 1 мм пути (учитывая редуктор)
-            mm_per_wheel_turn = 3.14159265 * self.cfg.wheel_diameter_mm
-            self.motor_deg_per_mm = (360.0 / mm_per_wheel_turn) * self.cfg.gear_ratio
+        # motor degrees per 1 mm of travel (gear 2:1 taken into account)
+        mm_per_wheel_turn = 3.14159265 * self.cfg.wheel_diameter_mm
+        self.motor_deg_per_mm = (360.0 / mm_per_wheel_turn) * self.cfg.gear_ratio
 
-            # знаки моторов (левый стоит зеркально → реверс)
-            self.left_sign = -1.0 if self.cfg.left_motor_reversed else 1.0
-            self.right_sign = -1.0 if self.cfg.right_motor_reversed else 1.0
+        # motor signs (left motor is mirrored -> reverse in the program)
+        self.left_sign = -1.0 if self.cfg.left_motor_reversed else 1.0
+        self.right_sign = -1.0 if self.cfg.right_motor_reversed else 1.0
 
-        # ---------- служебное ----------
-        def beep(self, times=1):
-            for _ in range(times):
+    # ---------- service ----------
+    def beep(self, times=1):
+        for _ in range(times):
+            if EV3DEV:
+                self.sound.beep()
+            else:
                 self.brick.speaker.beep(600, 120)
-                if times > 1:
-                    wait(120)
+            if times > 1:
+                wait_ms(120)
 
-        def stop(self):
+    def stop(self):
+        if EV3DEV:
+            self.left_motor.stop(stop_action='brake')
+            self.right_motor.stop(stop_action='brake')
+        else:
             self.left_motor.stop()
             self.right_motor.stop()
 
-        def travel_mm(self):
-            """Сколько мм проехали (по среднему углу моторов, с их знаками)."""
-            deg = (self.left_sign * self.left_motor.angle()
-                   + self.right_sign * self.right_motor.angle()) / 2.0
-            return deg / self.motor_deg_per_mm
+    def _angle_left(self):
+        if EV3DEV:
+            return self.left_motor.position
+        return self.left_motor.angle()
 
-        def reset_travel(self):
+    def _angle_right(self):
+        if EV3DEV:
+            return self.right_motor.position
+        return self.right_motor.angle()
+
+    def travel_mm(self):
+        """Travelled distance in mm (average of both motors, signs applied)."""
+        deg = (self.left_sign * self._angle_left()
+               + self.right_sign * self._angle_right()) / 2.0
+        return deg / self.motor_deg_per_mm
+
+    def reset_travel(self):
+        if EV3DEV:
+            self.left_motor.reset()
+            self.right_motor.reset()
+        else:
             self.left_motor.reset_angle(0)
             self.right_motor.reset_angle(0)
 
-        # ---------- движение ----------
-        def drive(self, speed_mm_s, steer):
-            """
-            speed_mm_s — скорость центра, мм/с (может быть < 0 — назад)
-            steer — «руль»: +1 → правое колесо быстрее (поворот влево),
-                            -1 → наоборот, 0 → прямо
-            """
-            v_left = speed_mm_s * (1.0 - steer)
-            v_right = speed_mm_s * (1.0 + steer)
-            lim = self.cfg.motor_max_dps
-            dl = self.left_sign * v_left * self.motor_deg_per_mm
-            dr = self.right_sign * v_right * self.motor_deg_per_mm
-            self.left_motor.run(clamp(dl, -lim, lim))
-            self.right_motor.run(clamp(dr, -lim, lim))
+    # ---------- movement ----------
+    def drive(self, speed_mm_s, steer):
+        """
+        speed_mm_s - centre speed, mm/s (may be negative = backwards)
+        steer      - +1 right wheel faster (turn left), -1 opposite, 0 straight
+        """
+        v_left = speed_mm_s * (1.0 - steer)
+        v_right = speed_mm_s * (1.0 + steer)
+        lim = self.cfg.motor_max_dps
+        dl = clamp(self.left_sign * v_left * self.motor_deg_per_mm, -lim, lim)
+        dr = clamp(self.right_sign * v_right * self.motor_deg_per_mm, -lim, lim)
 
-        def straight(self, distance_mm, speed_mm_s):
-            """Проехать прямо заданное расстояние (по одометрии колёс)."""
-            self.reset_travel()
-            self.drive(speed_mm_s, 0.0)
-            while abs(self.travel_mm()) < distance_mm:
-                wait(5)
-            self.stop()
-            wait(150)
+        if EV3DEV:
+            # ev3dev speed is in degrees per second
+            self.left_motor.run_forever(speed_sp=dl)
+            self.right_motor.run_forever(speed_sp=dr)
+        else:
+            self.right_motor.run(dr)
+            self.left_motor.run(dl)
 
-        # ---------- датчики ----------
-        def reflection_left(self):
-            return self.sensor_left.reflection()
+    def straight(self, distance_mm, speed_mm_s):
+        """Drive straight for a given distance (wheel odometry)."""
+        self.reset_travel()
+        self.drive(speed_mm_s, 0.0)
+        while abs(self.travel_mm()) < distance_mm:
+            wait_ms(5)
+        self.stop()
+        wait_ms(150)
 
-        def reflection_right(self):
-            return self.sensor_right.reflection()
+    # ---------- sensors ----------
+    def reflection_left(self):
+        if EV3DEV:
+            return self.sensor_left.reflected_light_intensity_pc
+        return self.sensor_left.reflection()
 
-        def distance_mm(self):
-            d = self.sonar.distance()
-            if d is None or d <= 0 or d > self.cfg.sonar_max_mm:
-                return self.cfg.sonar_max_mm       # «далеко, ничего нет»
-            return d
+    def reflection_right(self):
+        if EV3DEV:
+            return self.sensor_right.reflected_light_intensity_pc
+        return self.sensor_right.reflection()
 
-    # ========================================================
-    #  ПРОГРАММА
-    # ========================================================
+    @staticmethod
+    def _dist(obj, limit_mm):
+        try:
+            d = obj.distance_centimeters
+            if d is None:
+                return limit_mm
+            mm = d * 10.0
+        except Exception:
+            return limit_mm
+        if mm <= 0 or mm > limit_mm:
+            return limit_mm
+        return mm
 
-    def main():
-        cfg = Settings()
-        robot = Robot(cfg)
-        follower = LineFollower(cfg)
+    def distance_mm(self):
+        """Front sonar (port 3). Far = sonar_max_mm."""
+        return self._dist(self.sonar, self.cfg.sonar_max_mm)
 
-        print('=== полигон 1: линия + объект ===')
-        print('редуктор %.0f:1 — на 1 оборот колеса нужно %.0f° мотора'
-              % (cfg.gear_ratio, 360.0 * cfg.gear_ratio))
-        print('на %.0f мм: мотор %.0f° (%.2f оборота), колесо %.2f оборота'
-              % (cfg.start_straight_mm,
-                 cfg.start_straight_mm * robot.motor_deg_per_mm,
-                 cfg.start_straight_mm * robot.motor_deg_per_mm / 360.0,
-                 cfg.start_straight_mm / (3.14159265 * cfg.wheel_diameter_mm)))
-        robot.beep(2)
-
-        # ---------- 1. выезд из зоны старта: 50 см прямо ----------
-        robot.straight(cfg.start_straight_mm, cfg.start_speed_mm_s)
-        print('проехали %.0f мм — включаю линию' % cfg.start_straight_mm)
-
-        # ---------- 2. линия, пока не увидим объект ----------
-        # Период цикла задаём сами (wait в конце), поэтому dt известен
-        # без всяких часов — проще и надёжнее на роботе.
-        dt = cfg.loop_ms / 1000.0
-        while True:
-            dist = robot.distance_mm()
-            if dist < cfg.stop_mm:
-                robot.stop()
-                robot.beep(3)
-                print('объект в %.0f мм — СТОП' % dist)
-                return
-
-            speed, steer = follower.update(robot.reflection_left(),
-                                           robot.reflection_right(), dt)
-            if follower.state == 'lost':
-                robot.stop()
-                robot.beep(2)
-                print('линия потеряна — СТОП')
-                return
-
-            robot.drive(speed, steer)
-            wait(cfg.loop_ms)
-
-    # ========================================================
-    #  ПРОВЕРКА ДАТЧИКОВ (моторы не крутятся)
-    # ========================================================
-
-    def check_sensors():
-        cfg = Settings()
-        robot = Robot(cfg)
-        print('проверка: 1-левый свет, 2-правый свет, 3-расстояние (Ctrl+C — выход)')
-        print('на линии S1 и S2 маленькие (0-25), на белом поле — большие (70-95)')
-        robot.reset_travel()
-        while True:
-            print('S1=%3d  S2=%3d   S3=%4d мм   путь=%.0f мм'
-                  % (robot.reflection_left(), robot.reflection_right(),
-                     robot.distance_mm(), robot.travel_mm()))
-            wait(300)
+    def distance_right_mm(self):
+        """Right sonar (port 4 / D). Far = sonar_max_mm."""
+        return self._dist(self.sonar_side, self.cfg.sonar_max_mm)
 
 
 # ============================================================
-#  ЗАПУСК
+#  PROGRAM
+# ============================================================
+
+def main():
+    cfg = Settings()
+    robot = Robot(cfg)
+    follower = LineFollower(cfg)
+
+    log('=== polygon 1: line + obstacle ===')
+    log('gear %.0f:1 - one wheel turn needs %.0f deg of motor'
+        % (cfg.gear_ratio, 360.0 * cfg.gear_ratio))
+    log('for %.0f mm: motor %.0f deg (%.2f turns), wheel %.2f turns'
+        % (cfg.start_straight_mm,
+           cfg.start_straight_mm * robot.motor_deg_per_mm,
+           cfg.start_straight_mm * robot.motor_deg_per_mm / 360.0,
+           cfg.start_straight_mm / (3.14159265 * cfg.wheel_diameter_mm)))
+    robot.beep(2)
+
+    # ---------- 1. leave the start zone: 50 cm straight ----------
+    robot.straight(cfg.start_straight_mm, cfg.start_speed_mm_s)
+    log('drove %.0f mm - line follower on' % cfg.start_straight_mm)
+
+    # ---------- 2. follow the line until the obstacle ----------
+    dt = cfg.loop_ms / 1000.0
+    side_timer = 0.0
+    while True:
+        # front obstacle?
+        dist = robot.distance_mm()
+        if dist < cfg.stop_mm:
+            robot.stop()
+            robot.beep(3)
+            log('obstacle at %.0f mm - STOP' % dist)
+            return
+
+        # right sonar (port 4 / D): for information and future bypass
+        side = robot.distance_right_mm()
+        side_timer += dt
+        if side_timer >= 1.0:
+            side_timer = 0.0
+            if side < cfg.side_near_mm:
+                log('right sensor: %.0f mm (obstacle on the right)' % side)
+
+        speed, steer = follower.update(robot.reflection_left(),
+                                       robot.reflection_right(), dt)
+        if follower.state == 'lost':
+            robot.stop()
+            robot.beep(2)
+            log('line lost - STOP')
+            return
+
+        robot.drive(speed, steer)
+        wait_ms(cfg.loop_ms)
+
+
+# ============================================================
+#  SENSOR CHECK (motors do not move)
+# ============================================================
+
+def check_sensors():
+    cfg = Settings()
+    robot = Robot(cfg)
+    log('check: 1=left light, 2=right light, 3=front sonar, 4=right sonar')
+    log('on the line S1/S2 are small (0-25), on white floor big (70-95)')
+    robot.reset_travel()
+    while True:
+        log('S1=%3d  S2=%3d  S3=%4d mm  S4=%4d mm  travel=%.0f mm'
+            % (robot.reflection_left(), robot.reflection_right(),
+               robot.distance_mm(), robot.distance_right_mm(),
+               robot.travel_mm()))
+        wait_ms(300)
+
+
+# ============================================================
+#  START
 # ============================================================
 
 if __name__ == '__main__':
-    if not HAS_ROBOT:
-        print('Этот файл запускается на EV3 (Pybricks).')
-        print('На компьютере прогоните симулятор: python3 tools/sim.py')
-        print('Проверка надёжности линии:        python3 tools/stress.py')
+    if MODE == 'stay':
+        log('MODE = stay: nothing to do')
+    elif not HAS_ROBOT:
+        log('No robot libraries found (PC).')
+        log('Simulator: python3 tools/sim.py')
+        log('Stress test: python3 tools/stress.py')
+    elif MODE == 'check' or '--check' in sys.argv:
+        check_sensors()
     else:
-        import sys
-        if MODE == 'check' or '--check' in sys.argv:
-            check_sensors()
-        else:
-            main()
+        main()
