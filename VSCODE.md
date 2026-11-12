@@ -8,13 +8,14 @@
 
 ## 0. Ещё проще — без VS Code
 
-Одна команда в PowerShell скачивает проект и сама заливает его на кирпич:
+Скачайте `robolab.bat` и дважды щёлкните по нему в папке с `robot.py`:
 
-```powershell
-irm https://raw.githubusercontent.com/p25543770-lang/robolab/main/install.ps1 | iex
+```
+https://raw.githubusercontent.com/p25543770-lang/robolab/main/robolab.bat
 ```
 
-На вопрос «Залить на робота и запустить сейчас? [Y/n]» — **Enter**.
+Он обновит программу с GitHub (шаг 1) и предложит залить её на кирпич
+(шаг 2). На вопрос «Залить на робота и запустить сейчас? [Y/n]» — **Enter**.
 
 ## 1. Что нужно (один раз)
 
