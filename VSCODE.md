@@ -6,6 +6,16 @@
 > `usb.core.NoBackendError: No backend available` (это ошибка Windows-драйвера,
 > а не робота).
 
+## 0. Ещё проще — без VS Code
+
+Одна команда в PowerShell скачивает проект и сама заливает его на кирпич:
+
+```powershell
+irm https://raw.githubusercontent.com/p25543770-lang/robolab/main/install.ps1 | iex
+```
+
+На вопрос «Залить на робота и запустить сейчас? [Y/n]» — **Enter**.
+
 ## 1. Что нужно (один раз)
 
 **В Windows ничего доустанавливать не надо** — `ssh` и `scp` уже входят в
