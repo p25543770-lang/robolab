@@ -91,7 +91,7 @@ AUTO_UPDATE_AT_START = True
 REPO_OWNER = 'p25543770-lang'
 REPO_NAME = 'robolab'
 REPO_FILE = 'robot.py'
-UPDATE_TIMEOUT = 20          # seconds for one HTTP request
+UPDATE_TIMEOUT = 12          # seconds for one HTTP request
 
 # ============================================================
 #  PLATFORM DETECTION
@@ -824,6 +824,13 @@ ZIP_URL = ('https://github.com/%s/%s/archive/refs/heads/%%s.zip'
            % (REPO_OWNER, REPO_NAME))
 RAW_URL = ('https://raw.githubusercontent.com/%s/%s/%%s/%%s'
            % (REPO_OWNER, REPO_NAME))
+#  2nd way: the whole branch as a zip archive (works even when the raw
+#  server is blocked - on some networks raw.githubusercontent.com is not
+#  reachable, but codeload/github.com are)
+ZIP_REF_URL = ('https://github.com/%s/%s/archive/refs/heads/%%s.zip'
+               % (REPO_OWNER, REPO_NAME))
+ZIP_CODELOAD_URL = ('https://codeload.github.com/%s/%s/zip/refs/heads/%%s'
+                    % (REPO_OWNER, REPO_NAME))
 
 
 def branch_from_url(url):
@@ -923,6 +930,33 @@ def http_get(url, timeout=UPDATE_TIMEOUT):
     return None
 
 
+def script_from_zip(data, name=REPO_FILE):
+    """Take one file out of a GitHub zip archive -> str (or None)."""
+    if not data or len(data) < 4 or data[:2] != b'PK':
+        return None
+    try:
+        import io
+        import zipfile
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except Exception as err:
+        log('  zip cannot be opened: %s' % err)
+        return None
+    for item in archive.namelist():
+        if item.endswith('/' + name) or item == name:
+            try:
+                return text_of(archive.read(item))
+            except Exception as err:
+                log('  zip file cannot be read: %s' % err)
+                return None
+    log('  %s is not inside the archive' % name)
+    return None
+
+
+def download_program(branch):
+    """Newest version of REPO_FILE for a branch -> str (or None)."""
+    return text_of(http_get(RAW_URL % (branch, REPO_FILE)))
+
+
 def text_of(data):
     """bytes -> str, tolerant to BOM and broken bytes."""
     if data is None:
@@ -977,6 +1011,10 @@ def read_local(path):
 
 def write_local(path, text):
     """Write through a temporary file + rename (a crash keeps the old file)."""
+    folder = os.path.dirname(path) or '.'
+    if not os.access(folder, os.W_OK):
+        raise IOError('folder %s is read-only (copy robot.py to /home/robot)'
+                      % folder)
     tmp = path + '.new'
     out = open(tmp, 'wb')
     try:
@@ -1019,7 +1057,12 @@ def run_update(fetch_only=False, show_head=False):
     log('local line count: %d' % (0 if old is None else line_count(old)))
     log('downloading ...')
 
-    text = text_of(http_get(url))
+    text = download_program(branch)
+    if text is None:
+        log('raw file is not reachable - trying the zip archive of the branch')
+        text = script_from_zip(http_get(ZIP_REF_URL % branch))
+    if text is None:
+        text = script_from_zip(http_get(ZIP_CODELOAD_URL % branch))
     if text is None:
         log('FAILED: no answer from GitHub (no network?).')
         log('Download by hand: %s/blob/%s/%s' % (REPO_URL, branch, REPO_FILE))
@@ -1053,7 +1096,8 @@ def run_update(fetch_only=False, show_head=False):
         write_local(path, text)
     except Exception as err:
         log('FAILED to write the file: %s' % err)
-        log('Check that the file is not read-only.')
+        log('The program itself is still fine - just not updated.')
+        log('Put robot.py into /home/robot (that folder is writable).')
         return False
 
     log('UPDATED: %d -> %d lines' % (0 if old is None else line_count(old), new_lines))
