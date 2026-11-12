@@ -1059,54 +1059,60 @@ UPDATE_CACHE_FILE = 'robot.check'
 
 
 def update_cache_path():
-    """Where the time of the last successful check is stored."""
+    """Where the result of the last successful check is stored."""
     path = script_path()
     return os.path.join(os.path.dirname(path) or '.', UPDATE_CACHE_FILE)
 
 
-def read_cache_stamp(cache, current_text):
+def text_stamp(text):
     """
-    Return True if GitHub was asked less than UPDATE_CACHE_MIN minutes
-    ago AND the file was not changed since then (no clock on the EV3, so
-    the time is taken from the file modification time).
+    Short fingerprint of the file contents (no hashlib: it may be absent
+    on Pybricks). It answers one question: did somebody edit robot.py
+    by hand after the last update?
+    """
+    if not text:
+        return '0-0'
+    flat = text.replace('\r\n', '\n')
+    acc = 0
+    for char in flat:
+        acc = (acc * 131 + ord(char)) % 1000000007
+    return '%d-%d' % (len(flat), acc)
+
+
+def read_cache(cache):
+    """
+    -> (stamp that was on the disk, age in minutes) or None.
+    The EV3 has no battery clock, so the age comes from the file time.
     """
     try:
         info = os.stat(cache)
-    except Exception:
-        return False
-    try:
-        import time as _time
-        age_min = (_time.time() - info.st_mtime) / 60.0
-    except Exception:
-        return False
-    if age_min < 0 or age_min > UPDATE_CACHE_MIN:
-        return False
-    try:
+        age_min = (time.time() - info.st_mtime) / 60.0
         handle = open(cache, 'rb')
         try:
-            saved = text_of(handle.read()) or ''
+            saved = (text_of(handle.read()) or '').strip()
         finally:
             handle.close()
     except Exception:
-        return False
-    # the cached stamp holds the length of the file that was checked
-    return saved.strip() == str(len(current_text))
+        return None
+    if not saved:
+        return None
+    return saved, age_min
 
 
-def write_cache_stamp(cache, checked_text):
+def write_cache_stamp(cache, text_now_on_disk):
+    """Remember what the file looks like right after a check/update."""
     try:
         handle = open(cache, 'wb')
         try:
-            handle.write(data_of(str(len(checked_text))))
+            handle.write(data_of(text_stamp(text_now_on_disk)))
         finally:
             handle.close()
     except Exception:
         pass
 
 
-
-
-def run_update(fetch_only=False, show_head=False, quiet=False, quick=False):
+def run_update(fetch_only=False, show_head=False, quiet=False,
+               quick=False, force=False):
     """
     Check GitHub for a new robot.py and install it.
       fetch_only = True  -> only look, never write anything
@@ -1114,6 +1120,8 @@ def run_update(fetch_only=False, show_head=False, quiet=False, quick=False):
       quiet      = True  -> a few lines instead of the full log
       quick      = True  -> one short attempt (used on start: a robot
                             without Wi-Fi must drive, not wait)
+      force      = True  -> install even if robot.py was edited by hand
+                            (MODE = 'update' / --update do this)
     Returns True only when this file on the disk was really replaced.
     """
     global _UPDATE_VERBOSE
@@ -1134,18 +1142,27 @@ def run_update(fetch_only=False, show_head=False, quiet=False, quick=False):
         log('local line count: %d' % (0 if old is None else line_count(old)))
         log('downloading ...')
 
-    # ---- remember the answer for a while: the EV3 has no clock and
-    # ---- every start should not wait for the network
+    # ---- 1. was this file edited by hand since the last check?
+    # ----    then an automatic update must not overwrite the changes
     cache = update_cache_path()
-    stamp = read_cache_stamp(cache, old or '')
-    if stamp and not fetch_only:
-        if quiet:
-            log('update: checked less than %d min ago - skipping'
-                % (UPDATE_CACHE_MIN * 60 // 60))
-        else:
-            log('update: the last check was %d min ago - skipping'
-                % UPDATE_CACHE_MIN)
-        return False
+    cached = read_cache(cache)
+    edited = False
+    if cached and old is not None:
+        cached_stamp, age_min = cached
+        edited = (cached_stamp != text_stamp(old))
+        if edited and not force and not fetch_only:
+            log('update: robot.py was edited on this robot - auto update skipped')
+            log('update: to update anyway set MODE = \'update\' in the file')
+            return False
+        # ---- 2. checked recently? do not ask GitHub again
+        if (not edited) and age_min <= UPDATE_CACHE_MIN and not fetch_only:
+            if quiet:
+                log('update: checked less than %d min ago - skipping'
+                    % UPDATE_CACHE_MIN)
+            else:
+                log('update: the last check was %d min ago - skipping'
+                    % int(age_min))
+            return False
 
     if quick:
         text = text_of(http_get(RAW_URL % (branch, REPO_FILE),
@@ -1252,7 +1269,7 @@ def start():
         log('MODE = stay: nothing to do')
         return
     if MODE == 'update' or '--update' in sys.argv:
-        run_update()
+        run_update(force=True)
         return
     if '--update-check' in sys.argv:
         run_update(fetch_only=True)

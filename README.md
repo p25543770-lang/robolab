@@ -76,6 +76,7 @@ update: starting the new version now
 | Отключить обновление совсем | `AUTO_UPDATE_AT_START = False` |
 | Подробный лог вместо 2 строк | `AUTO_UPDATE_QUIET = False` |
 | Откатить версию | `mv robot.py.old robot.py` (или переименовать в файловом менеджере) |
+| Правили настройки прямо в файле на кирпиче | автообновление не затрёт ваши правки: увидит, что файл изменён, и напишет `robot.py was edited on this robot - auto update skipped`. Обновить всё равно — `MODE = 'update'` |
 | Обновить вручную, без заезда | `MODE = 'update'` в начале файла |
 | Только проверить, ничего не меняя | `python3 robot.py --update-check` на компьютере |
 | Ветка | жёстко задаётся `AUTO_UPDATE_BRANCH` (по умолчанию `main`) |
