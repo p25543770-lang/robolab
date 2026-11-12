@@ -1,0 +1,10 @@
+{
+    "files.encoding": "utf8",
+    "files.associations": {
+        "*.py": "python"
+    },
+    "python.languageServer": "Pylance",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingImports": "none"
+    }
+}

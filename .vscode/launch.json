@@ -1,0 +1,42 @@
+{
+    // Запуск по F5: программа заливается на EV3 по USB и сразу стартует.
+    // 1) Установите расширение Python (ms-python.python).
+    // 2) В терминале:  pip install pybricksdev
+    // 3) Подключите EV3 по USB (прошивка Pybricks).
+    // 4) Откройте robot.py и нажмите F5.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "EV3: залить и запустить (robot.py)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pybricksdev",
+            "args": ["run", "usb", "${workspaceFolder}/robot.py"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "EV3: залить и запустить (без ожидания конца)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pybricksdev",
+            "args": ["run", "usb", "${workspaceFolder}/robot.py", "--no-wait"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Компьютер: симулятор полигона",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/sim.py",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Компьютер: стресс-тест линии",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/stress.py",
+            "console": "integratedTerminal"
+        }
+    ]
+}
