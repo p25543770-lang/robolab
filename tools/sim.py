@@ -113,16 +113,34 @@ def make_track():
     return Track(PATH)
 
 
-def reflection_at(track, px, py, rnd):
+def reflection_at_point(track, px, py, rnd, noise=1.0):
     """Показание датчика света: 0 на линии, 100 на белом."""
     d = track.dist(px, py)
     edge = LINE_W / 2.0
     if d <= edge * 0.7:
-        return 0.0 + rnd.gauss(0, 1.5)
+        return 0.0 + rnd.gauss(0, 1.5 * noise)
     if d >= edge * 1.3:
-        return 88.0 + rnd.gauss(0, 2.0)
+        return 88.0 + rnd.gauss(0, 2.0 * noise)
     k = (d - edge * 0.7) / (edge * 0.6)
-    return 0.0 + 88.0 * k + rnd.gauss(0, 1.5)
+    return 0.0 + 88.0 * k + rnd.gauss(0, 1.5 * noise)
+
+
+SENSOR_APERTURE = 5.0     # мм — половина «пятна» датчика (реальный ~10 мм)
+
+
+def reflection_at(track, px, py, rnd, noise=1.0, heading=None):
+    """
+    Показание датчика света с учётом ПЯТНА: реальный датчик EV3 смотрит
+    кружком ~10 мм, поэтому усредняем 3 точки поперёк курса.
+    """
+    if heading is None:
+        return reflection_at_point(track, px, py, rnd, noise)
+    vals = []
+    for k in (-1.0, 0.0, 1.0):
+        qx = px + k * SENSOR_APERTURE * math.cos(heading - math.pi / 2)
+        qy = py + k * SENSOR_APERTURE * math.sin(heading - math.pi / 2)
+        vals.append(reflection_at_point(track, qx, qy, rnd, noise))
+    return sum(vals) / len(vals)
 
 
 def sonar_front(px, py, heading):
@@ -145,8 +163,12 @@ class Env(object):
     drive(speed, steer) — как команды на моторы.
     """
 
-    def __init__(self, cfg, seed=1, object_xy=(OBJECT_X, OBJECT_Y)):
+    def __init__(self, cfg, seed=1, object_xy=(OBJECT_X, OBJECT_Y),
+                 sensor_half=None, noise=1.0, dropout=0.0):
         self.cfg = cfg
+        self.sensor_half = SENSOR_HALF if sensor_half is None else sensor_half
+        self.noise = noise
+        self.dropout = dropout
         self.rnd = random.Random(seed)
         self.track = make_track()
         self.object_xy = object_xy
@@ -161,13 +183,19 @@ class Env(object):
         cx = self.x + SENSOR_FWD * math.cos(self.heading)
         cy = self.y + SENSOR_FWD * math.sin(self.heading)
         # 1 — ЛЕВЫЙ датчик: слева от курса (heading + 90°)
-        lx = cx + SENSOR_HALF * math.cos(self.heading + math.pi / 2)
-        ly = cy + SENSOR_HALF * math.sin(self.heading + math.pi / 2)
+        lx = cx + self.sensor_half * math.cos(self.heading + math.pi / 2)
+        ly = cy + self.sensor_half * math.sin(self.heading + math.pi / 2)
         # 2 — ПРАВЫЙ датчик: справа от курса (heading - 90°)
-        rx = cx + SENSOR_HALF * math.cos(self.heading - math.pi / 2)
-        ry = cy + SENSOR_HALF * math.sin(self.heading - math.pi / 2)
-        refl_l = reflection_at(self.track, lx, ly, self.rnd)
-        refl_r = reflection_at(self.track, rx, ry, self.rnd)
+        rx = cx + self.sensor_half * math.cos(self.heading - math.pi / 2)
+        ry = cy + self.sensor_half * math.sin(self.heading - math.pi / 2)
+        refl_l = reflection_at(self.track, lx, ly, self.rnd, self.noise, self.heading)
+        refl_r = reflection_at(self.track, rx, ry, self.rnd, self.noise, self.heading)
+        # «провал» датчика: блик/тень — показание врёт почти как белое поле
+        if self.dropout > 0.0:
+            if self.rnd.random() < self.dropout:
+                refl_l = 88.0 + self.rnd.gauss(0, 4.0)
+            if self.rnd.random() < self.dropout:
+                refl_r = 88.0 + self.rnd.gauss(0, 4.0)
         dx, dy = self.object_xy[0] - cx, self.object_xy[1] - cy
         dist = math.hypot(dx, dy)
         ang = math.atan2(dy, dx) - self.heading
@@ -211,10 +239,12 @@ class Env(object):
 
 
 def run(cfg=None, seed=1, start=None, object_xy=(OBJECT_X, OBJECT_Y),
-        verbose=True, keep_frames=False):
+        verbose=True, keep_frames=False, sensor_half=None, noise=1.0,
+        dropout=0.0):
     """Прогон программы robot.py в симуляторе."""
     cfg = cfg or Settings()
-    env = Env(cfg, seed, object_xy)
+    env = Env(cfg, seed, object_xy, sensor_half=sensor_half, noise=noise,
+              dropout=dropout)
     if start:
         env.x, env.y, env.heading = start
     follower = LineFollower(cfg)
@@ -222,6 +252,7 @@ def run(cfg=None, seed=1, start=None, object_xy=(OBJECT_X, OBJECT_Y),
     dt = cfg.loop_ms / 1000.0
     frames = []
     result = {'note': 'лимит времени', 'time': 0.0}
+    deadline = 60.0          # было 60, но цикл ниже тоже ограничен — правьте оба
 
     # ---------- 1. прямо 50 см ----------
     need = cfg.start_straight_mm
@@ -233,7 +264,7 @@ def run(cfg=None, seed=1, start=None, object_xy=(OBJECT_X, OBJECT_Y),
 
     # ---------- 2. линия, пока не увидим объект ----------
     min_clear = 9999.0
-    while env.t < 60.0:
+    while env.t < 60.0:      # см. deadline
         refl_l, refl_r, sonar = env.sensors()
 
         clear = env.clear_of_object()
@@ -258,7 +289,7 @@ def run(cfg=None, seed=1, start=None, object_xy=(OBJECT_X, OBJECT_Y),
 
     res = {
         'note': result['note'],
-        'time': result['time'],
+        'time': env.t if result['note'] == 'лимит времени' else result['time'],
         'x': env.x,
         'y': env.y,
         'max_dev': env.max_dev,
