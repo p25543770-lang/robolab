@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # ============================================================================
 #  РОБОЛАБ «Большое путешествие» — старшая категория (13–17 лет)
@@ -35,6 +36,13 @@ from pybricks.parameters import Port, Direction
 from pybricks.tools import wait, StopWatch
 
 brick = EV3Brick()
+
+def log(text):
+    """Safe print: the EV3 console is ASCII-only."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(text.encode('ascii', 'replace').decode('ascii'))
 
 # ============================================================================
 # 1. ПОРТЫ (по конструкции робота)
@@ -151,13 +159,13 @@ def line_error(left, right, on_white_bg):
 # ============================================================================
 
 def mode_calib():
-    print('Калибровка. За 5 секунд подноси робота к БЕЛОЙ и ЧЁРНОЙ клетке.')
-    print('left = S1 (слева), right = S2 (справа)')
+    log('Calibration. Hold the robot over WHITE and BLACK cells for 5 s.')
+    log('left = S1 (left), right = S2 (right)')
     t = StopWatch()
     while t.time() < 5000:
-        print('left:', sensor_left.reflection(), ' right:', sensor_right.reflection())
+        log(str(('left: %d  right: %d' % (sensor_left.reflection(), sensor_right.reflection()))))
         wait(100)
-    print('Запиши значения в WHITE_REF и BLACK_REF вверху файла.')
+    log('Write the values into WHITE_REF and BLACK_REF at the top of the file.')
 
 
 # ============================================================================
@@ -165,7 +173,7 @@ def mode_calib():
 # ============================================================================
 
 def mode_run():
-    print('Инверсная линия. Нажми любую кнопку на кирпиче — старт.')
+    log('Inverse line. Press any button on the brick to start.')
     while not brick.buttons.pressed():
         wait(10)
     brick.speaker.beep(1000, 150)
@@ -215,7 +223,7 @@ def mode_run():
 
         # --- 6. Любая кнопка посреди заезда — стоп (удобно на тренировке) ---
         if brick.buttons.pressed():
-            print('Стоп по кнопке.')
+            log('Stop by button.')
             break
 
         wait(LOOP_MS)
@@ -226,7 +234,7 @@ def mode_run():
     brick.speaker.beep(880, 200)
     wait(100)
     brick.speaker.beep(1320, 300)
-    print('Финиш. Время, мс:', t.time())
+    log('Finish. Time, ms: ' + str(t.time()))
 
 
 # ============================================================================
